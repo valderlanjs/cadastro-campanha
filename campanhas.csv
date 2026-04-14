@@ -1,0 +1,4 @@
+id,tipo,filiais,nome_acao,laboratorio,ponto_focal,data_inicio,data_fim,duracao_dias,reposicao_por,margem_AL,margem_PE,margem_SE,observacoes,criado_em
+CAM-001,Campanha,,Ação rebaixa - IMEC,IMEC,Valderlan,2026-04-13,2026-04-30,18,Fornecedor,,,,sss,2026-04-13 21:14
+CAM-002,Campanha,"AL, PE",Teste,Neo Quimica,Danilo,2026-04-13,2026-04-30,18,Fornecedor,,,,teste,2026-04-13 21:22
+CAM-003,Ação,"AL, PE, SE",Acelera Sellout,EMS MARCAS,VALDERLAN,01/04/2026,30/04/2026,30,Fornecedor,"13,5","15,5","-10,5",TESTE,13/04/2026 21:31
