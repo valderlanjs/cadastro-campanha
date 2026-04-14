@@ -1,23 +1,27 @@
 import streamlit as st
 import pandas as pd
-import os
 from io import BytesIO
 from datetime import date, datetime
+import gspread
+from google.oauth2.service_account import Credentials
 
 # ── Config ───────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Campanhas/Ações MIX · Gestão",
+    page_title="CampanhaOS · Gestão",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
 
-CSV_PATH = "campanhas.csv"
-
 COLUNAS = [
     "id", "tipo", "filiais", "nome_acao", "laboratorio", "ponto_focal",
     "data_inicio", "data_fim", "duracao_dias", "reposicao_por",
     "margem_AL", "margem_PE", "margem_SE", "observacoes", "criado_em",
+]
+
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
 ]
 
 # ── Tema escuro ───────────────────────────────────────────────────────────────
@@ -59,20 +63,16 @@ h3 { font-weight: 600; color: #94A3B8 !important; font-size: 0.85rem !important;
     color: #E2E8F0 !important;
 }
 label, [data-testid="stWidgetLabel"] p {
-    color: #94A3B8 !important;
-    font-size: 0.8rem !important;
-    font-weight: 600 !important;
-    text-transform: uppercase !important;
-    letter-spacing: 0.06em !important;
-    font-family: 'Syne', sans-serif !important;
+    color: #94A3B8 !important; font-size: 0.8rem !important;
+    font-weight: 600 !important; text-transform: uppercase !important;
+    letter-spacing: 0.06em !important; font-family: 'Syne', sans-serif !important;
 }
 [data-testid="stButton"] > button[kind="primary"] {
     background: linear-gradient(135deg, #09A49B, #0D7A73) !important;
-    color: #fff !important; border: none !important;
-    border-radius: 6px !important;
-    font-family: 'Syne', sans-serif !important;
-    font-weight: 700 !important; font-size: 0.9rem !important;
-    padding: 0.6rem 2rem !important; transition: opacity 0.2s !important;
+    color: #fff !important; border: none !important; border-radius: 6px !important;
+    font-family: 'Syne', sans-serif !important; font-weight: 700 !important;
+    font-size: 0.9rem !important; padding: 0.6rem 2rem !important;
+    transition: opacity 0.2s !important;
 }
 [data-testid="stButton"] > button[kind="primary"]:hover { opacity: 0.85 !important; }
 [data-testid="stButton"] > button[kind="secondary"] {
@@ -92,7 +92,6 @@ label, [data-testid="stWidgetLabel"] p {
 }
 [data-testid="stDataFrame"] { border: 1px solid #1E2A3A !important; border-radius: 8px !important; overflow: hidden; }
 hr { border-color: #1E2A3A !important; }
-[data-testid="stNotification"] { border-radius: 6px !important; }
 [data-testid="stRadio"] label { text-transform: none !important; font-size: 0.88rem !important; color: #CBD5E1 !important; }
 [data-testid="stMetric"] {
     background: #161B27 !important; border: 1px solid #1E2A3A !important;
@@ -118,19 +117,49 @@ hr { border-color: #1E2A3A !important; }
 """, unsafe_allow_html=True)
 
 
-# ── Helpers — dados ───────────────────────────────────────────────────────────
+# ── Google Sheets ─────────────────────────────────────────────────────────────
+@st.cache_resource
+def conectar_sheets():
+    creds = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"],
+        scopes=SCOPES,
+    )
+    return gspread.authorize(creds)
+
+
+def get_worksheet():
+    client = conectar_sheets()
+    spreadsheet_id = st.secrets["SPREADSHEET_ID"]
+    sh = client.open_by_key(spreadsheet_id)
+    try:
+        ws = sh.worksheet("Campanhas")
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title="Campanhas", rows=1000, cols=len(COLUNAS))
+        ws.append_row(COLUNAS)  # cabeçalho
+    return ws
+
+
+@st.cache_data(ttl=30)  # cache de 30s para não bater a API em todo rerender
 def carregar_dados() -> pd.DataFrame:
-    if os.path.exists(CSV_PATH):
-        df = pd.read_csv(CSV_PATH, dtype=str)
+    try:
+        ws = get_worksheet()
+        dados = ws.get_all_records()
+        if not dados:
+            return pd.DataFrame(columns=COLUNAS)
+        df = pd.DataFrame(dados, dtype=str)
         for col in COLUNAS:
             if col not in df.columns:
                 df[col] = ""
         return df[COLUNAS]
-    return pd.DataFrame(columns=COLUNAS)
+    except Exception as e:
+        st.error(f"Erro ao carregar dados do Sheets: {e}")
+        return pd.DataFrame(columns=COLUNAS)
 
 
-def salvar_dados(df: pd.DataFrame):
-    df.to_csv(CSV_PATH, index=False)
+def salvar_linha(nova: dict):
+    ws = get_worksheet()
+    ws.append_row([nova.get(col, "") for col in COLUNAS])
+    st.cache_data.clear()  # limpa cache para próxima leitura buscar dados frescos
 
 
 def proximo_id(df: pd.DataFrame) -> str:
@@ -157,18 +186,16 @@ def gerar_excel(df: pd.DataFrame) -> bytes:
 
     thin  = Side(style="thin",   color="D1FAF8")
     thick = Side(style="medium", color="09A49B")
-    borda      = Border(left=thin,  right=thin,  top=thin,  bottom=thin)
-    borda_hdr  = Border(left=thick, right=thick, top=thick, bottom=thick)
+    borda     = Border(left=thin,  right=thin,  top=thin,  bottom=thin)
+    borda_hdr = Border(left=thick, right=thick, top=thick, bottom=thick)
 
-    # Linha 1 — título
     ws.merge_cells("A1:N1")
-    ws["A1"] = "Campanhas/ Ações  —  Relatório de Campanhas & Ações"
+    ws["A1"] = "CampanhaOS  —  Relatório de Campanhas & Ações"
     ws["A1"].font      = Font(name="Arial", bold=True, size=15, color="FFFFFF")
     ws["A1"].fill      = PatternFill("solid", fgColor="0D7A73")
     ws["A1"].alignment = Alignment(horizontal="left", vertical="center", indent=1)
     ws.row_dimensions[1].height = 34
 
-    # Linha 2 — subtítulo
     ws.merge_cells("A2:N2")
     ws["A2"] = (
         f"Gerado em: {datetime.now().strftime('%d/%m/%Y %H:%M')}"
@@ -180,10 +207,8 @@ def gerar_excel(df: pd.DataFrame) -> bytes:
     ws["A2"].fill      = PatternFill("solid", fgColor="09A49B")
     ws["A2"].alignment = Alignment(horizontal="left", vertical="center", indent=1)
     ws.row_dimensions[2].height = 18
+    ws.row_dimensions[3].height = 6
 
-    ws.row_dimensions[3].height = 6  # espaço
-
-    # Linha 4 — cabeçalhos
     colunas = [
         ("ID",             "id",            10),
         ("Tipo",           "tipo",          13),
@@ -210,30 +235,25 @@ def gerar_excel(df: pd.DataFrame) -> bytes:
         ws.column_dimensions[get_column_letter(ci)].width = w
     ws.row_dimensions[4].height = 26
 
-    # Dados
-    tipo_bg  = {"Campanha": "1E3A5F", "Ação": "1A3A2A"}
-    tipo_fg  = {"Campanha": "60A5FA", "Ação": "34D399"}
+    tipo_bg = {"Campanha": "1E3A5F", "Ação": "1A3A2A"}
+    tipo_fg = {"Campanha": "60A5FA", "Ação": "34D399"}
 
     for ri, (_, row) in enumerate(df.iterrows(), 5):
         fill_bg = "F0FAFA" if ri % 2 == 0 else "FFFFFF"
         tipo_v  = str(row.get("tipo", ""))
-
         for ci, (_, campo, _) in enumerate(colunas, 1):
             val  = str(row.get(campo, "")) if pd.notna(row.get(campo, "")) else ""
             cell = ws.cell(row=ri, column=ci, value=val)
             cell.alignment = Alignment(horizontal="center", vertical="center")
             cell.border    = borda
-
             if campo == "tipo" and tipo_v in tipo_bg:
                 cell.fill = PatternFill("solid", fgColor=tipo_bg[tipo_v])
                 cell.font = Font(name="Arial", size=9, bold=True, color=tipo_fg[tipo_v])
             else:
                 cell.fill = PatternFill("solid", fgColor=fill_bg)
                 cell.font = Font(name="Arial", size=9, color="1C2333")
-
         ws.row_dimensions[ri].height = 18
 
-    # Totalizador
     tot = 5 + len(df)
     ws.merge_cells(f"A{tot}:C{tot}")
     ws[f"A{tot}"] = f"Total: {len(df)} registro(s)"
@@ -241,7 +261,6 @@ def gerar_excel(df: pd.DataFrame) -> bytes:
     ws[f"A{tot}"].fill      = PatternFill("solid", fgColor="09A49B")
     ws[f"A{tot}"].alignment = Alignment(horizontal="center", vertical="center")
     ws.row_dimensions[tot].height = 18
-
     ws.freeze_panes = "A5"
 
     buf = BytesIO()
@@ -269,13 +288,13 @@ def gerar_pdf(df: pd.DataFrame) -> bytes:
     CAMP_BG = hc("EFF6FF"); ACAO_BG = hc("F0FDF4")
     CAMP_FG = hc("1E40AF"); ACAO_FG = hc("166534")
 
-    sWH  = ParagraphStyle("wh",  fontSize=7,  fontName="Helvetica-Bold",   textColor=colors.white,   alignment=TA_CENTER)
-    sCEL = ParagraphStyle("cel", fontSize=7,  fontName="Helvetica",        textColor=TEXT_C,          alignment=TA_CENTER, leading=9)
-    sCMP = ParagraphStyle("cmp", fontSize=7,  fontName="Helvetica-Bold",   textColor=CAMP_FG,         alignment=TA_CENTER)
-    sACO = ParagraphStyle("aco", fontSize=7,  fontName="Helvetica-Bold",   textColor=ACAO_FG,         alignment=TA_CENTER)
-    sTIT = ParagraphStyle("tit", fontSize=16, fontName="Helvetica-Bold",   textColor=colors.white,    alignment=TA_LEFT)
-    sSUB = ParagraphStyle("sub", fontSize=8,  fontName="Helvetica",        textColor=colors.white,    alignment=TA_LEFT)
-    sROD = ParagraphStyle("rod", fontSize=7,  fontName="Helvetica-Oblique",textColor=GRAY_C,          alignment=TA_RIGHT)
+    sWH  = ParagraphStyle("wh",  fontSize=7, fontName="Helvetica-Bold",    textColor=colors.white, alignment=TA_CENTER)
+    sCEL = ParagraphStyle("cel", fontSize=7, fontName="Helvetica",         textColor=TEXT_C,       alignment=TA_CENTER, leading=9)
+    sCMP = ParagraphStyle("cmp", fontSize=7, fontName="Helvetica-Bold",    textColor=CAMP_FG,      alignment=TA_CENTER)
+    sACO = ParagraphStyle("aco", fontSize=7, fontName="Helvetica-Bold",    textColor=ACAO_FG,      alignment=TA_CENTER)
+    sTIT = ParagraphStyle("tit", fontSize=16,fontName="Helvetica-Bold",    textColor=colors.white, alignment=TA_LEFT)
+    sSUB = ParagraphStyle("sub", fontSize=8, fontName="Helvetica",         textColor=colors.white, alignment=TA_LEFT)
+    sROD = ParagraphStyle("rod", fontSize=7, fontName="Helvetica-Oblique", textColor=GRAY_C,       alignment=TA_RIGHT)
 
     buf = BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=landscape(A4),
@@ -283,9 +302,8 @@ def gerar_pdf(df: pd.DataFrame) -> bytes:
                             topMargin=12*mm,  bottomMargin=12*mm)
     story = []
 
-    # Cabeçalho
     hdr = Table([[
-        Paragraph("Campanha/Ações", sTIT),
+        Paragraph("CampanhaOS", sTIT),
         Paragraph(
             f"Relatório de Campanhas &amp; Ações &nbsp;|&nbsp; "
             f"Gerado em: <b>{datetime.now().strftime('%d/%m/%Y %H:%M')}</b> &nbsp;|&nbsp; "
@@ -304,7 +322,6 @@ def gerar_pdf(df: pd.DataFrame) -> bytes:
     story.append(hdr)
     story.append(Spacer(1, 4*mm))
 
-    # Tabela
     labels = ["ID","Tipo","Filiais","Nome","Laboratório","Ponto Focal",
               "Início","Fim","Dias","Reposição","Mg AL","Mg PE","Mg SE","Cadastrado em"]
     keys   = ["id","tipo","filiais","nome_acao","laboratorio","ponto_focal",
@@ -313,14 +330,12 @@ def gerar_pdf(df: pd.DataFrame) -> bytes:
     widths = [15,16,18,50,36,30,18,18,11,22,13,13,13,26]
 
     tdata = [[Paragraph(l, sWH) for l in labels]]
-
     for _, row in df.iterrows():
         linha = []
         for k in keys:
             v = str(row.get(k,"")) if pd.notna(row.get(k,"")) else ""
             if k == "tipo":
-                st = sCMP if v == "Campanha" else sACO
-                linha.append(Paragraph(v, st))
+                linha.append(Paragraph(v, sCMP if v == "Campanha" else sACO))
             else:
                 linha.append(Paragraph(v, sCEL))
         tdata.append(linha)
@@ -341,14 +356,13 @@ def gerar_pdf(df: pd.DataFrame) -> bytes:
     for ri, (_, row) in enumerate(df.iterrows(), 1):
         bg = CAMP_BG if row.get("tipo") == "Campanha" else ACAO_BG
         ts.append(("BACKGROUND", (1,ri),(1,ri), bg))
-
     tbl.setStyle(TableStyle(ts))
     story.append(tbl)
 
     story.append(Spacer(1, 3*mm))
     story.append(HRFlowable(width="100%", thickness=0.8, color=TEAL_C))
     story.append(Spacer(1, 1.5*mm))
-    story.append(Paragraph("Campanhas/Ações Mix · Gestão de Campanhas & Ações", sROD))
+    story.append(Paragraph("CampanhaOS · Gestão de Campanhas & Ações", sROD))
 
     doc.build(story)
     buf.seek(0)
@@ -362,7 +376,7 @@ st.markdown("""
               border-radius:8px;display:flex;align-items:center;justify-content:center;
               font-size:1.1rem">⚡</div>
   <div>
-    <div style="font-size:1.4rem;font-weight:800;color:#F8FAFC;line-height:1">Campanhas/Ações Mix</div>
+    <div style="font-size:1.4rem;font-weight:800;color:#F8FAFC;line-height:1">CampanhaOS</div>
     <div style="font-size:0.72rem;color:#475569;font-weight:600;letter-spacing:0.08em;text-transform:uppercase">
       Gestão de Campanhas & Ações
     </div>
@@ -420,7 +434,7 @@ with tab_novo:
     with st.form("form_campanha", clear_on_submit=True):
         st.markdown("### Identificação")
         c1, c2 = st.columns(2)
-        with c1: nome_acao  = st.text_input("Nome da ação / campanha", placeholder="Ex: Verão 2025 — Linha Infantil")
+        with c1: nome_acao   = st.text_input("Nome da ação / campanha", placeholder="Ex: Verão 2025 — Linha Infantil")
         with c2: laboratorio = st.text_input("Laboratório / Fornecedor", placeholder="Ex: Grupo Hypermarcas")
         ponto_focal = st.text_input("Ponto focal (fornecedor)", placeholder="Ex: João Silva")
 
@@ -445,9 +459,9 @@ with tab_novo:
         elif not laboratorio.strip():
             st.error("Preencha o laboratório / fornecedor.")
         else:
-            df = carregar_dados()
+            df_atual = carregar_dados()
             nova = {
-                "id":            proximo_id(df),
+                "id":            proximo_id(df_atual),
                 "tipo":          tipo,
                 "filiais":       ", ".join(filiais_selecionadas),
                 "nome_acao":     nome_acao.strip(),
@@ -463,8 +477,7 @@ with tab_novo:
                 "observacoes":   observacoes.strip(),
                 "criado_em":     datetime.now().strftime("%d/%m/%Y %H:%M"),
             }
-            df = pd.concat([df, pd.DataFrame([nova])], ignore_index=True)
-            salvar_dados(df)
+            salvar_linha(nova)
             st.success(f"✓ Registro **{nova['id']}** cadastrado com sucesso!")
 
 
@@ -522,8 +535,6 @@ with tab_lista:
                      use_container_width=True, hide_index=True)
 
         st.markdown("<br>", unsafe_allow_html=True)
-
-        # ── Exportações ───────────────────────────────────────────────────────
         st.markdown("### Exportar registros filtrados")
         st.markdown('<div style="font-size:0.78rem;color:#475569;margin-bottom:0.8rem">Escolha o formato de exportação</div>', unsafe_allow_html=True)
 
@@ -531,51 +542,28 @@ with tab_lista:
         ts = datetime.now().strftime("%d%m%Y_%H%M")
 
         with exp1:
-            st.markdown("""
-            <div style="background:#161B27;border:1px solid #1E2A3A;border-radius:8px;
-                        padding:1rem 1.25rem;margin-bottom:0.5rem">
-              <div style="font-size:0.75rem;font-weight:700;color:#34D399;text-transform:uppercase;
-                          letter-spacing:0.06em;margin-bottom:0.3rem">📄 CSV</div>
+            st.markdown("""<div style="background:#161B27;border:1px solid #1E2A3A;border-radius:8px;padding:1rem 1.25rem;margin-bottom:0.5rem">
+              <div style="font-size:0.75rem;font-weight:700;color:#34D399;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.3rem">📄 CSV</div>
               <div style="font-size:0.8rem;color:#64748B">Formato simples, compatível com qualquer planilha</div>
             </div>""", unsafe_allow_html=True)
-            st.download_button(
-                "⬇  Baixar CSV",
-                data=df_view.to_csv(index=False).encode("utf-8"),
-                file_name=f"campanhas_{ts}.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
+            st.download_button("⬇  Baixar CSV", data=df_view.to_csv(index=False).encode("utf-8"),
+                               file_name=f"campanhas_{ts}.csv", mime="text/csv", use_container_width=True)
 
         with exp2:
-            st.markdown("""
-            <div style="background:#161B27;border:1px solid #1E2A3A;border-radius:8px;
-                        padding:1rem 1.25rem;margin-bottom:0.5rem">
-              <div style="font-size:0.75rem;font-weight:700;color:#60A5FA;text-transform:uppercase;
-                          letter-spacing:0.06em;margin-bottom:0.3rem">📊 Excel (.xlsx)</div>
+            st.markdown("""<div style="background:#161B27;border:1px solid #1E2A3A;border-radius:8px;padding:1rem 1.25rem;margin-bottom:0.5rem">
+              <div style="font-size:0.75rem;font-weight:700;color:#60A5FA;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.3rem">📊 Excel (.xlsx)</div>
               <div style="font-size:0.8rem;color:#64748B">Relatório formatado com cores, cabeçalho e totais</div>
             </div>""", unsafe_allow_html=True)
-            excel_bytes = gerar_excel(df_view)
-            st.download_button(
-                "⬇  Baixar Excel",
-                data=excel_bytes,
-                file_name=f"campanhas_{ts}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-            )
+            st.download_button("⬇  Baixar Excel", data=gerar_excel(df_view),
+                               file_name=f"campanhas_{ts}.xlsx",
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                               use_container_width=True)
 
         with exp3:
-            st.markdown("""
-            <div style="background:#161B27;border:1px solid #1E2A3A;border-radius:8px;
-                        padding:1rem 1.25rem;margin-bottom:0.5rem">
-              <div style="font-size:0.75rem;font-weight:700;color:#F472B6;text-transform:uppercase;
-                          letter-spacing:0.06em;margin-bottom:0.3rem">📑 PDF</div>
+            st.markdown("""<div style="background:#161B27;border:1px solid #1E2A3A;border-radius:8px;padding:1rem 1.25rem;margin-bottom:0.5rem">
+              <div style="font-size:0.75rem;font-weight:700;color:#F472B6;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.3rem">📑 PDF</div>
               <div style="font-size:0.8rem;color:#64748B">Relatório pronto para impressão e compartilhamento</div>
             </div>""", unsafe_allow_html=True)
-            pdf_bytes = gerar_pdf(df_view)
-            st.download_button(
-                "⬇  Baixar PDF",
-                data=pdf_bytes,
-                file_name=f"campanhas_{ts}.pdf",
-                mime="application/pdf",
-                use_container_width=True,
-            )
+            st.download_button("⬇  Baixar PDF", data=gerar_pdf(df_view),
+                               file_name=f"campanhas_{ts}.pdf", mime="application/pdf",
+                               use_container_width=True)
